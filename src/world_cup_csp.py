@@ -5,14 +5,12 @@ class WorldCupCSP:
         """
         Inicializa el problema CSP para el sorteo del Mundial.
         :param teams: Diccionario con los equipos, sus confederaciones y bombos.
-                      Cada equipo debe tener las claves: 'conf', 'pot'.
-                      Opcionalmente 'host_group' si es anfitrión.
         :param groups: Lista con los nombres de los grupos (A-L).
         :param debug: Booleano para activar trazas de depuración.
         """
-        self.teams = teams
+        self.teams  = teams
         self.groups = groups
-        self.debug = debug
+        self.debug  = debug
 
         # Las variables son los equipos.
         self.variables = list(teams.keys())
@@ -20,149 +18,82 @@ class WorldCupCSP:
         # El dominio de cada variable inicialmente son todos los grupos.
         self.domains = {team: list(groups) for team in self.variables}
 
-        # Restringir dominios de los anfitriones a su grupo preasignado
-        for team, info in teams.items():
-            if 'host_group' in info:
-                self.domains[team] = [info['host_group']]
-
-        # Número total de equipos UEFA (para el balance global)
-        self.total_uefa = sum(1 for t in teams.values() if t['conf'] == 'UEFA')
-        # Número de grupos
-        self.num_groups = len(groups)
-        # Valores objetivo para el balance UEFA
-        self.uefa_per_group_min = self.total_uefa // self.num_groups
-        self.uefa_per_group_max = self.uefa_per_group_min + 1
-        # Cantidad de grupos que deben tener el máximo
-        self.groups_with_max = self.total_uefa % self.num_groups
-
+    
     def get_team_confederation(self, team):
         return self.teams[team]["conf"]
 
     def get_team_pot(self, team):
         return self.teams[team]["pot"]
 
+    def _get_group_teams(self, group, assignment):
+        return [t for t, g in assignment.items() if g == group]
+
+    def _count_confederation_in_group(self, conf, group_teams):
+        return sum(1 for t in group_teams if self.get_team_confederation(t) == conf)
+
+    def _has_pot_conflict(self, pot, group_teams):
+        return any(self.get_team_pot(t) == pot for t in group_teams)
+
     def is_valid_assignment(self, group, team, assignment):
         """
         Verifica si asignar un equipo a un grupo viola
         las restricciones de confederación o tamaño del grupo.
         """
-        # Obtener equipos ya asignados al grupo
-        current = [t for t, g in assignment.items() if g == group]
-        # 1. Tamaño del grupo (máximo 2)
-        if len(current) >= 2:
+        # TODO: implementar restricción de tamaño del grupo (máximo 4)
+        # TODO: implementar restricción de que no puede haber dos equipos del mismo bombo
+        # TODO: implementar restricción de confederaciones (máximo 1, excepto UEFA máximo 2)
+
+        # Este es un valor de retorno por defecto, debes modificarlo
+        group_teams = self._get_group_teams(group, assignment)
+
+        # Restricción de tamaño: máximo 4 equipos por grupo
+        if len(group_teams) >= 4:
             return False
-        # 2. Un equipo por bombo por grupo
-        team_pot = self.get_team_pot(team)
-        for t in current:
-            if self.get_team_pot(t) == team_pot:
-                return False
-        # 3. Restricciones de confederación
-        # Contar equipos por confederación en el grupo (incluyendo el nuevo)
-        conf_counts = {}
-        for t in current:
-            c = self.get_team_confederation(t)
-            conf_counts[c] = conf_counts.get(c, 0) + 1
-        c_team = self.get_team_confederation(team)
-        conf_counts[c_team] = conf_counts.get(c_team, 0) + 1
-        for conf, count in conf_counts.items():
-            if conf == "UEFA":
-                if count > 2:
-                    return False
-            else:
-                if count > 1:
-                    return False
-        # 4. Anfitrión preasignado
-        team_info = self.teams[team]
-        if 'host_group' in team_info:
-            if team_info['host_group'] != group:
-                return False
-        return True
 
-    def uefa_balance_feasible(self, assignment):
-        """
-        Verifica si el balance global de UEFA es alcanzable con la asignación actual.
-        Se asume que todos los equipos restantes pueden ser colocados de alguna manera.
-        Retorna True si es factible, False en caso contrario.
-        """
-        # Contar UEFA actual por grupo
-        uefa_per_group = {}
-        for t, g in assignment.items():
-            if self.get_team_confederation(t) == "UEFA":
-                uefa_per_group[g] = uefa_per_group.get(g, 0) + 1
-        # Equipos UEFA restantes
-        assigned_uefa = sum(uefa_per_group.values())
-        remaining_uefa = self.total_uefa - assigned_uefa
-
-        # Si ya no quedan UEFA, verificar que ningún grupo exceda el máximo permitido
-        if remaining_uefa == 0:
-            for count in uefa_per_group.values():
-                if count > self.uefa_per_group_max:
-                    return False
-            return True
-
-        # Para cada grupo, calcular cuántos equipos más puede recibir (total y UEFA)
-        # y los requisitos mínimos de UEFA para alcanzar el objetivo
-        # Primero, contar equipos totales por grupo
-        total_per_group = {}
-        for t, g in assignment.items():
-            total_per_group[g] = total_per_group.get(g, 0) + 1
-        # Los grupos que aún tienen cupo (máximo 2)
-        remaining_slots = {}
-        for g in self.groups:
-            used = total_per_group.get(g, 0)
-            remaining_slots[g] = 2 - used  # cada grupo tiene 2 slots
-
-        # Calcular mínimo y máximo de UEFA que puede terminar en cada grupo
-        # Mínimo: si podemos evitar poner más UEFA, lo hacemos, pero a veces es forzado
-        # Para simplificar, usamos una cota: cada grupo puede recibir como máximo
-        # el mínimo entre sus slots restantes y (max_uefa - uefa_actual)
-        # y como mínimo, debe recibir al menos (min_uefa - uefa_actual) si es positivo,
-        # pero si los slots restantes no alcanzan, es imposible.
-        min_uefa_needed = 0
-        max_uefa_possible = 0
-        for g in self.groups:
-            current_uefa = uefa_per_group.get(g, 0)
-            # Si ya excede el máximo, inviable
-            if current_uefa > self.uefa_per_group_max:
-                return False
-            # Slots restantes
-            slots = remaining_slots[g]
-            # Máximo UEFA adicional que podemos poner en este grupo
-            max_add = min(slots, self.uefa_per_group_max - current_uefa)
-            max_uefa_possible += max_add
-            # Mínimo UEFA adicional que necesitamos poner para llegar al mínimo objetivo
-            min_needed = max(0, self.uefa_per_group_min - current_uefa)
-            # Si los slots restantes son menores que lo necesario, inviable
-            if min_needed > slots:
-                return False
-            min_uefa_needed += min_needed
-
-        # Verificar si podemos cumplir con los restantes
-        if remaining_uefa < min_uefa_needed or remaining_uefa > max_uefa_possible:
+        # Restricción de bombo: no puede haber dos equipos del mismo bombo
+        if self._has_pot_conflict(self.get_team_pot(team), group_teams):
             return False
+
+        # Restricción de confederación
+        conf       = self.get_team_confederation(team)
+        conf_count = self._count_confederation_in_group(conf, group_teams)
+
+        if conf == "UEFA":
+            if conf_count >= 2:   # UEFA: máximo 2 por grupo
+                return False
+        else:
+            if conf_count >= 1:   # Resto: máximo 1 por grupo
+                return False
+
         return True
 
     def forward_check(self, assignment, domains):
         """
         Propagación de restricciones.
-        Elimina valores inconsistentes en dominios futuros.
-        Retorna (True, nuevos_dominios) si la propagación es exitosa,
-        (False, None) si algún dominio queda vacío.
+        Debe eliminar valores inconsistentes en dominios futuros.
+        Retorna True si la propagación es exitosa, False si algún dominio queda vacío.
         """
+        # Hacemos una copia de los dominios actuales para modificarla de forma segura
         new_domains = copy.deepcopy(domains)
-        # Para cada variable no asignada, filtrar su dominio
-        for var in self.variables:
-            if var in assignment:
-                continue
-            # Lista de grupos que siguen siendo válidos
-            valid_groups = []
-            for grp in new_domains[var]:
-                # Simular asignación temporal y verificar validez
-                if self.is_valid_assignment(grp, var, assignment):
-                    valid_groups.append(grp)
-            if not valid_groups:
-                return False, None
-            new_domains[var] = valid_groups
+
+        # TODO: implementar forward checking para filtrar grupos inválidos
+        # en los dominios de las variables no asignadas.
+
+        # Este es un valor de retorno por defecto, debes modificarlo
+        for team in self.variables:
+            if team in assignment:
+                continue  # ya asignado, se omite
+
+            new_domains[team] = [
+                g for g in new_domains[team]
+                if self.is_valid_assignment(g, team, assignment)
+            ]
+
+            if not new_domains[team]:
+                if self.debug:
+                    print(f"  [FC] Dominio vacío para {team} → poda")
+                return False, new_domains
+
         return True, new_domains
 
     def select_unassigned_variable(self, assignment, domains):
@@ -170,55 +101,100 @@ class WorldCupCSP:
         Heurística MRV (Minimum Remaining Values).
         Selecciona la variable no asignada con el dominio más pequeño.
         """
-        unassigned = [v for v in self.variables if v not in assignment]
+        # TODO: implementar MRV
+
+        # Este es un valor de retorno por defecto, debes modificarlo
+        unassigned = [v for v in domains if v not in assignment]
         if not unassigned:
             return None
-        # Elegir la variable con el dominio de menor tamaño
-        best_var = min(unassigned, key=lambda v: len(domains[v]))
-        return best_var
+        return min(unassigned, key=lambda v: len(domains[v]))
+
+    def order_domain_values(self, var, assignment, domains):
+        """
+        Devuelve los valores del dominio de `var` en el orden actual.
+        (Puede extenderse con heurística LCV si se desea.)
+        """
+        return domains[var]
 
     def backtrack(self, assignment, domains=None):
         """
         Backtracking search para resolver el CSP.
         """
+        """
+        BACKTRACK(assignment, csp)  →  implementado como  backtrack(assignment, domains)
+
+        Pseudocódigo de referencia:
+            if len(assignment) == len(csp.variables): return assignment
+            var = select_unassigned_variable(csp, assignment)
+            for team in order_domain_values(var, assignment, csp):
+                if is_valid_assignment(var, team, assignment):
+                    assignment[var] = team
+                    local_consistent = forward_check(csp, var, team, assignment)
+                    if local_consistent:
+                        result = BACKTRACK(assignment, csp)
+                        if result is not None:
+                            return result
+                    del assignment[var]   # backtrack
+            return None
+
+        Nota: variables=equipos, valores=grupos (convención requerida por los tests).
+        La lógica de búsqueda es idéntica al pseudocódigo.
+        """
         if domains is None:
             domains = copy.deepcopy(self.domains)
 
-        # Condición de parada: todas las variables asignadas
+        # Condición de parada: Si todas las variables están asignadas, retornamos la asignación.
         if len(assignment) == len(self.variables):
-            # Verificar balance UEFA al final (global)
-            if self.uefa_balance_feasible(assignment):
-                return assignment
-            else:
-                return None  # no cumple balance, falla
+            return assignment
 
-        # Seleccionar variable con MRV
+        # TODO: implementar algoritmo de backtracking
+        # 1. Seleccionar variable con MRV
+        # 2. Iterar sobre sus valores (grupos) posibles en el dominio
+        # 3. Verificar si es válido, hacer la asignación y aplicar forward checking
+        # 4. Llamada recursiva
+        # 5. Deshacer la asignación si falla (backtrack)
+
+        # ── Selección de variable (MRV) ──────────────────────────────────
+        # Equivale a:  var = select_unassigned_variable(csp, assignment)
         var = self.select_unassigned_variable(assignment, domains)
         if var is None:
             return None
 
-        # Ordenar valores (podría implementarse alguna heurística)
-        for grp in domains[var]:
-            # Verificar si la asignación es válida con el estado actual
-            if not self.is_valid_assignment(grp, var, assignment):
-                continue
+        # ── Iteración sobre el dominio ordenado ──────────────────────────
+        # Equivale a:  for team in order_domain_values(var, assignment, csp)
+        for group in self.order_domain_values(var, assignment, domains):
 
-            # Realizar asignación
-            new_assignment = assignment.copy()
-            new_assignment[var] = grp
+            # Verificar restricciones
+            # Equivale a:  if is_valid_assignment(var, team, assignment)
+            if self.is_valid_assignment(group, var, assignment):
 
-            # Forward checking
-            success, new_domains = self.forward_check(new_assignment, domains)
-            if not success:
-                continue
+                assignment[var] = group
+                saved_domains = copy.deepcopy(domains)  # snapshot para backtrack
 
-            # Verificar factibilidad del balance UEFA (global)
-            if not self.uefa_balance_feasible(new_assignment):
-                continue
+                if self.debug:
+                    print(
+                        f"Asignando {var} "
+                        f"({self.get_team_confederation(var)}, "
+                        f"Bombo {self.get_team_pot(var)}) "
+                        f"-> Grupo {group}"
+                    )
 
-            # Llamada recursiva
-            result = self.backtrack(new_assignment, new_domains)
-            if result is not None:
-                return result
+                # Propagación de restricciones hacia el futuro
+                # Equivale a:  local_consistent = forward_check(csp, var, team, assignment)
+                local_consistent, new_domains = self.forward_check(assignment, domains)
 
+                if local_consistent:
+                    # Llamada recursiva
+                    result = self.backtrack(assignment, new_domains)
+                    if result is not None:
+                        return result
+
+                # ── Backtrack: deshacer asignación y restaurar dominios ──
+                del assignment[var]
+                domains = saved_domains
+
+                if self.debug:
+                    print(f"Backtrack: deshaciendo {var} del Grupo {group}")
+       
+        # Este es un valor de retorno por defecto, debes modificarlo
         return None
